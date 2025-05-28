@@ -1,6 +1,5 @@
 pipeline {
     agent any
-
     parameters {
         string(name: 'AWS_ACCOUNT_ID', defaultValue: '205930632952', description: 'AWS Account ID')
         string(name: 'AWS_REGION', defaultValue: 'eu-west-2', description: 'AWS Region')
