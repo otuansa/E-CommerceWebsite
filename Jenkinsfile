@@ -1,19 +1,24 @@
 pipeline {
-    agent any
-
-    environment {
-        // Default values (can be overridden by parameters or external config)
-        AWS_REGION = 'eu-west-2'
-        ECR_REPOSITORY = 'projectme-ak'
-    }
+    agent { label 'docker-terraform-agent' }
 
     parameters {
         string(name: 'AWS_ACCOUNT_ID', defaultValue: '205930632952', description: 'AWS Account ID')
-        string(name: 'IMAGE_TAG', defaultValue: "${env.BUILD_NUMBER}", description: 'Docker image tag')
+        string(name: 'AWS_REGION', defaultValue: 'eu-west-2', description: 'AWS Region')
+        string(name: 'IMAGE_TAG', defaultValue: "v${env.BUILD_NUMBER}-${sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()}", description: 'Docker image tag')
         string(name: 'CLUSTER_NAME', defaultValue: 'your-eks-cluster-name', description: 'EKS Cluster Name')
     }
 
     stages {
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (!params.AWS_ACCOUNT_ID ==~ /\d{12}/) {
+                        error "AWS_ACCOUNT_ID must be a 12-digit number"
+                    }
+                }
+            }
+        }
+
         stage('Checkout') {
             steps {
                 checkout scm
@@ -22,14 +27,20 @@ pipeline {
 
         stage('Load Dynamic Config') {
             steps {
-                script {
-                    // Fetch dynamic configuration from AWS Systems Manager Parameter Store or Secrets Manager
-                    AWS_ACCOUNT_ID = sh(script: "aws ssm get-parameter --name /jenkins/AWS_ACCOUNT_ID --query 'Parameter.Value' --output text", returnStdout: true).trim()
-                    AWS_REGION = sh(script: "aws ssm get-parameter --name /jenkins/AWS_REGION --query 'Parameter.Value' --output text", returnStdout: true).trim()
-                    CLUSTER_NAME = sh(script: "aws ssm get-parameter --name /jenkins/CLUSTER_NAME --query 'Parameter.Value' --output text", returnStdout: true).trim()
-
-                    // Set the Docker image URI dynamically
-                    DOCKER_IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${params.IMAGE_TAG}"
+                withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                    script {
+                        try {
+                            AWS_ACCOUNT_ID = sh(script: "aws ssm get-parameter --name /jenkins/AWS_ACCOUNT_ID --with-decryption --query 'Parameter.Value' --output text", returnStdout: true).trim()
+                        } catch (Exception e) {
+                            AWS_ACCOUNT_ID = params.AWS_ACCOUNT_ID
+                        }
+                        try {
+                            CLUSTER_NAME = sh(script: "aws ssm get-parameter --name /jenkins/CLUSTER_NAME --with-decryption --query 'Parameter.Value' --output text", returnStdout: true).trim()
+                        } catch (Exception e) {
+                            CLUSTER_NAME = params.CLUSTER_NAME
+                        }
+                        DOCKER_IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/projectme-ak:${params.IMAGE_TAG}"
+                    }
                 }
             }
         }
@@ -37,15 +48,25 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    docker.build(DOCKER_IMAGE, './webapp')
+                    docker.build(DOCKER_IMAGE, '-f webapp/Dockerfile ./webapp')
+                }
+            }
+        }
+
+        stage('Test Docker Image') {
+            steps {
+                script {
+                    def container = docker.image(DOCKER_IMAGE).run('-p 8080:80')
+                    sh 'sleep 5 && curl http://localhost:8080'
+                    container.stop()
                 }
             }
         }
 
         stage('Login to Amazon ECR') {
             steps {
-                script {
-                    sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                    sh "aws ecr get-login-password --region ${params.AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com"
                 }
             }
         }
@@ -53,7 +74,7 @@ pipeline {
         stage('Push Docker Image to ECR') {
             steps {
                 script {
-                    docker.withRegistry("https://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com") {
+                    docker.withRegistry("https://${AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com") {
                         docker.image(DOCKER_IMAGE).push()
                     }
                 }
@@ -63,11 +84,11 @@ pipeline {
         stage('Update Terraform with New Image URI') {
             steps {
                 script {
-                    // Update the image URI in Terraform configuration
-                    sh "sed -i 's|image = .*|image = \"${DOCKER_IMAGE}\"|g' TerraformDep/main.tf"
-
-                    // Update the cluster name in Terraform configuration (if needed)
-                    sh "sed -i 's|cluster_name = .*|cluster_name = \"${CLUSTER_NAME}\"|g' TerraformDep/main.tf"
+                    writeFile file: 'TerraformDep/terraform.tfvars', text: """
+                    ecr_image_uri = "${DOCKER_IMAGE}"
+                    cluster_name = "${CLUSTER_NAME}"
+                    region = "${params.AWS_REGION}"
+                    """
                 }
             }
         }
@@ -75,9 +96,13 @@ pipeline {
         stage('Apply Terraform Changes') {
             steps {
                 dir('TerraformDep') {
-                    script {
-                        sh 'terraform init'
-                        sh 'terraform apply -auto-approve'
+                    withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                        script {
+                            sh 'terraform init'
+                            sh 'terraform workspace select dev || terraform workspace new dev'
+                            sh 'terraform plan -out=tfplan'
+                            sh 'terraform apply -auto-approve tfplan'
+                        }
                     }
                 }
             }
@@ -85,11 +110,17 @@ pipeline {
     }
 
     post {
+        always {
+            sh 'docker system prune -f'
+        }
         success {
             echo 'Pipeline completed successfully.'
         }
         failure {
             echo 'Pipeline failed.'
+            dir('TerraformDep') {
+                sh 'terraform destroy -auto-approve || true'
+            }
         }
     }
 }
