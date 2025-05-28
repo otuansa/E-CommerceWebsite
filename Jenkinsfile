@@ -8,7 +8,7 @@ pipeline {
     }
 
     stages {
-        stage('Validate Parameters') {
+        stage('Validate Parameter') {
             steps {
                 script {
                     if (!params.AWS_ACCOUNT_ID ==~ /\d{12}/) {
