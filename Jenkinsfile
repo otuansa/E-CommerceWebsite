@@ -1,5 +1,5 @@
 pipeline {
-    agent { label 'docker-terraform-agent' }
+    agent any
 
     parameters {
         string(name: 'AWS_ACCOUNT_ID', defaultValue: '205930632952', description: 'AWS Account ID')
