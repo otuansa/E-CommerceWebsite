@@ -1,14 +1,25 @@
 pipeline {
     agent any
+
     parameters {
         string(name: 'AWS_ACCOUNT_ID', defaultValue: '205930632952', description: 'AWS Account ID')
         string(name: 'AWS_REGION', defaultValue: 'eu-west-2', description: 'AWS Region')
-        string(name: 'IMAGE_TAG', defaultValue: "v${env.BUILD_NUMBER}-${sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()}", description: 'Docker image tag')
+        string(name: 'IMAGE_TAG', defaultValue: '', description: 'Docker image tag (leave blank to use build number and commit hash)')
         string(name: 'CLUSTER_NAME', defaultValue: 'your-eks-cluster-name', description: 'EKS Cluster Name')
     }
 
     stages {
-        stage('Validate Parameter') {
+        stage('Compute Image Tag') {
+            steps {
+                script {
+                    // Compute IMAGE_TAG dynamically after agent is allocated
+                    def gitCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    IMAGE_TAG = params.IMAGE_TAG ?: "v${env.BUILD_NUMBER}-${gitCommit}"
+                }
+            }
+        }
+
+        stage('Validate Parameters') {
             steps {
                 script {
                     if (!params.AWS_ACCOUNT_ID ==~ /\d{12}/) {
@@ -32,13 +43,15 @@ pipeline {
                             AWS_ACCOUNT_ID = sh(script: "aws ssm get-parameter --name /jenkins/AWS_ACCOUNT_ID --with-decryption --query 'Parameter.Value' --output text", returnStdout: true).trim()
                         } catch (Exception e) {
                             AWS_ACCOUNT_ID = params.AWS_ACCOUNT_ID
+                            echo "Failed to fetch AWS_ACCOUNT_ID from SSM, using parameter default: ${AWS_ACCOUNT_ID}"
                         }
                         try {
                             CLUSTER_NAME = sh(script: "aws ssm get-parameter --name /jenkins/CLUSTER_NAME --with-decryption --query 'Parameter.Value' --output text", returnStdout: true).trim()
                         } catch (Exception e) {
                             CLUSTER_NAME = params.CLUSTER_NAME
+                            echo "Failed to fetch CLUSTER_NAME from SSM, using parameter default: ${CLUSTER_NAME}"
                         }
-                        DOCKER_IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/projectme-ak:${params.IMAGE_TAG}"
+                        DOCKER_IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/projectme-ak:${IMAGE_TAG}"
                     }
                 }
             }
