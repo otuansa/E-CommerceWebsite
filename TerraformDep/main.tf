@@ -322,6 +322,8 @@ resource "helm_release" "load_balancer_controller" {
     repository = "https://aws.github.io/eks-charts"
     chart      = "aws-load-balancer-controller"
     namespace  = "kube-system"
+    timeout    = 600  # Increased timeout to 10 minutes
+    wait       = true
     set {
         name  = "clusterName"
         value = var.cluster_name
@@ -333,6 +335,14 @@ resource "helm_release" "load_balancer_controller" {
     set {
         name  = "serviceAccount.name"
         value = "aws-load-balancer-controller"
+    }
+    set {
+        name  = "region"
+        value = var.region
+    }
+    set {
+        name  = "vpcId"
+        value = aws_vpc.main.id
     }
     depends_on = [
         kubernetes_service_account.load_balancer_controller,

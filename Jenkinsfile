@@ -105,7 +105,6 @@ pipeline {
         }
 
 
-
         stage('Login to Amazon ECR') {
             when {
                 expression { !params.DESTROY }
@@ -189,9 +188,9 @@ pipeline {
         always {
             script {
                 if (!params.DESTROY) {
-                    sh 'docker system prune -f || true'
-                    sh 'docker ps -q --filter "name=test-container-${env.BUILD_NUMBER}" | xargs -r docker stop || true'
-                    sh 'docker ps -a -q --filter "name=test-container-${env.BUILD_NUMBER}" | xargs -r docker rm || true'
+                    sh script: 'docker system prune -f || true', shell: '/bin/bash'
+                    sh script: 'docker ps -q --filter "name=test-container-${env.BUILD_NUMBER}" | xargs -r docker stop || true', shell: '/bin/bash'
+                    sh script: 'docker ps -a -q --filter "name=test-container-${env.BUILD_NUMBER}" | xargs -r docker rm || true', shell: '/bin/bash'
                 }
                 echo 'Cleaning up workspace.'
                 cleanWs()
@@ -205,7 +204,7 @@ pipeline {
             script {
                 if (!params.DESTROY) {
                     dir('TerraformDep') {
-                        sh 'terraform init && terraform destroy -auto-approve || true'
+                        sh script: 'terraform init && terraform destroy -auto-approve || true', shell: '/bin/bash'
                     }
                 }
             }
