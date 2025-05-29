@@ -14,8 +14,11 @@ terraform {
             version = "~> 2.0"
         }
     }
-    backend "local" {
-        path = "terraform.tfstate"
+    backend "s3" {
+        bucket         = "ecommerce-terraform-state-205930632952"
+        key            = "terraform.tfstate"
+        region         = "eu-west-2"
+        dynamodb_table = "ecommerce-terraform-locks"
     }
 }
 
