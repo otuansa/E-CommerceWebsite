@@ -1,0 +1,42 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'AWS_REGION', defaultValue: 'eu-west-2', description: 'AWS Region')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Terraform Destroy') {
+            steps {
+                dir('TerraformDep') {
+                    script {
+                        withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                            sh 'terraform init'
+                            sh 'terraform workspace select dev || true'
+                            sh 'terraform destroy -auto-approve'
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Cleaning up workspace.'
+            cleanWs()
+        }
+        success {
+            echo 'Terraform destroy completed successfully.'
+        }
+        failure {
+            echo 'Terraform destroy failed.'
+        }
+    }
+}
