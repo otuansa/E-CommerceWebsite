@@ -37,7 +37,7 @@ pipeline {
 
         stage('Load Dynamic Config') {
             steps {
-                withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                     script {
                         try {
                             AWS_ACCOUNT_ID = sh(script: "aws ssm get-parameter --name /jenkins/AWS_ACCOUNT_ID --with-decryption --query 'Parameter.Value' --output text", returnStdout: true).trim()
