@@ -38,7 +38,7 @@ pipeline {
 
         stage('Load Dynamic Config') {
             steps {
-                withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                     script {
                         def awsAccountId = params.AWS_ACCOUNT_ID
                         def clusterName = params.CLUSTER_NAME
@@ -63,7 +63,7 @@ pipeline {
 
         stage('Ensure ECR Repository') {
             steps {
-                withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                     script {
                         sh "aws ecr describe-repositories --repository-names projectme-ak --region ${params.AWS_REGION} || aws ecr create-repository --repository-name projectme-ak --region ${params.AWS_REGION}"
                     }
@@ -91,7 +91,7 @@ pipeline {
 
         stage('Login to Amazon ECR') {
             steps {
-                withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                     sh "aws ecr get-login-password --region ${params.AWS_REGION} | docker login --username AWS --password-stdin ${env.DOCKER_IMAGE.split(':')[0]}"
                 }
             }
