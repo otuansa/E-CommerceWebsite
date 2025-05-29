@@ -16,7 +16,7 @@ pipeline {
             steps {
                 dir('TerraformDep') {
                     script {
-                        withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                        withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                             sh 'terraform init'
                             sh 'terraform workspace select dev || true'
                             sh 'terraform destroy -auto-approve'
