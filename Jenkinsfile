@@ -6,7 +6,7 @@ pipeline {
         string(name: 'AWS_REGION', defaultValue: 'eu-west-2', description: 'AWS Region')
         string(name: 'IMAGE_TAG', defaultValue: '', description: 'Docker image tag (leave blank to use build number and commit hash)')
         string(name: 'CLUSTER_NAME', defaultValue: 'your-eks-cluster-name', description: 'EKS Cluster Name')
-        string(name: 'TEST_PORT', defaultValue: '80', description: 'Host port for testing Docker image (use 0 for random port)')
+        string(name: 'TEST_PORT', defaultValue: '8080', description: 'Host port for testing Docker image (use 0 for random port)')
     }
 
     stages {
@@ -88,7 +88,22 @@ pipeline {
             }
         }
 
-
+        stage('Test Docker Image') {
+            steps {
+                script {
+                    def testPort = params.TEST_PORT.toInteger()
+                    def hostPort = testPort == 0 ? '' : "-p ${testPort}:80"
+                    def containerName = "test-container-${env.BUILD_NUMBER}"
+                    try {
+                        sh "docker run -d ${hostPort} --name ${containerName} ${env.DOCKER_IMAGE}"
+                        sh "sleep 5 && curl http://localhost:${testPort == 0 ? '80' : testPort}"
+                    } finally {
+                        sh "docker stop ${containerName} || true"
+                        sh "docker rm ${containerName} || true"
+                    }
+                }
+            }
+        }
 
         stage('Login to Amazon ECR') {
             steps {
@@ -117,6 +132,8 @@ pipeline {
                     ecr_image_uri = "${env.DOCKER_IMAGE}"
                     cluster_name = "${env.CLUSTER_NAME}"
                     region = "${params.AWS_REGION}"
+                    service_type = "LoadBalancer"
+                    aws_account_id = "${env.AWS_ACCOUNT_ID}"
                     """
                 }
             }

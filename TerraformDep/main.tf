@@ -1,135 +1,129 @@
+# Terraform configuration for EKS cluster and application deployment
+terraform {
+    required_providers {
+        aws = {
+            source  = "hashicorp/aws"
+            version = "~> 5.0"
+        }
+        kubernetes = {
+            source  = "hashicorp/kubernetes"
+            version = "~> 2.0"
+        }
+        helm = {
+            source  = "hashicorp/helm"
+            version = "~> 2.0"
+        }
+    }
+    backend "local" {
+        path = "terraform.tfstate"
+    }
+}
+
+# AWS provider configuration
 provider "aws" {
     region = var.region
 }
 
+# Kubernetes provider for EKS
 provider "kubernetes" {
     host                   = aws_eks_cluster.eks_cluster.endpoint
     cluster_ca_certificate = base64decode(aws_eks_cluster.eks_cluster.certificate_authority[0].data)
     exec {
         api_version = "client.authentication.k8s.io/v1beta1"
+        args        = ["eks", "get-token", "--cluster-name", aws_eks_cluster.eks_cluster.name]
         command     = "aws"
-        args        = ["eks", "get-token", "--cluster-name", aws_eks_cluster.eks_cluster.name, "--region", var.region]
     }
 }
 
-# VPC Resources
-resource "aws_vpc" "eks_vpc" {
-    cidr_block           = var.vpc_cidr
-    enable_dns_hostnames = true
-    enable_dns_support   = true
+# Helm provider for deploying AWS Load Balancer Controller
+provider "helm" {
+    kubernetes {
+        host                   = aws_eks_cluster.eks_cluster.endpoint
+        cluster_ca_certificate = base64decode(aws_eks_cluster.eks_cluster.certificate_authority[0].data)
+        exec {
+            api_version = "client.authentication.k8s.io/v1beta1"
+            args        = ["eks", "get-token", "--cluster-name", aws_eks_cluster.eks_cluster.name]
+            command     = "aws"
+        }
+    }
+}
 
+# VPC and networking
+resource "aws_vpc" "main" {
+    cidr_block = "10.0.0.0/16"
     tags = {
-        Name = "${var.cluster_name}-vpc"
+        Name = "eks-vpc"
     }
 }
 
-# Create 2 public and 2 private subnets across different AZs
 resource "aws_subnet" "public" {
     count                   = 2
-    vpc_id                  = aws_vpc.eks_vpc.id
-    cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
-    availability_zone       = data.aws_availability_zones.available.names[count.index]
+    vpc_id                  = aws_vpc.main.id
+    cidr_block              = "10.0.${count.index}.0/24"
+    availability_zone       = element(data.aws_availability_zones.available.names, count.index)
     map_public_ip_on_launch = true
-
     tags = {
-        Name                                        = "${var.cluster_name}-public-subnet-${count.index}"
-        "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-        "kubernetes.io/role/elb"                    = "1"
+        Name = "eks-public-${count.index}"
+        "kubernetes.io/role/elb" = "1"
     }
 }
 
-resource "aws_subnet" "private" {
-    count             = 2
-    vpc_id            = aws_vpc.eks_vpc.id
-    cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
-    availability_zone = data.aws_availability_zones.available.names[count.index]
-
-    tags = {
-        Name                                        = "${var.cluster_name}-private-subnet-${count.index}"
-        "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-        "kubernetes.io/role/internal-elb"           = "1"
-    }
-}
-
-# Get available AZs
-data "aws_availability_zones" "available" {}
-
-# Internet Gateway for public subnets
 resource "aws_internet_gateway" "igw" {
-    vpc_id = aws_vpc.eks_vpc.id
-
+    vpc_id = aws_vpc.main.id
     tags = {
-        Name = "${var.cluster_name}-igw"
+        Name = "eks-igw"
     }
 }
 
-# Elastic IP for NAT Gateway
-resource "aws_eip" "nat" {
-    domain = "vpc"
-
-    tags = {
-        Name = "${var.cluster_name}-nat-eip"
-    }
-}
-
-# NAT Gateway for private subnets
-resource "aws_nat_gateway" "nat" {
-    allocation_id = aws_eip.nat.id
-    subnet_id     = aws_subnet.public[0].id
-
-    tags = {
-        Name = "${var.cluster_name}-nat"
-    }
-
-    depends_on = [aws_internet_gateway.igw]
-}
-
-# Route table for public subnets
 resource "aws_route_table" "public" {
-    vpc_id = aws_vpc.eks_vpc.id
-
+    vpc_id = aws_vpc.main.id
     route {
         cidr_block = "0.0.0.0/0"
         gateway_id = aws_internet_gateway.igw.id
     }
-
     tags = {
-        Name = "${var.cluster_name}-public-rt"
+        Name = "eks-public-rt"
     }
 }
 
-# Route table associations for public subnets
 resource "aws_route_table_association" "public" {
     count          = 2
     subnet_id      = aws_subnet.public[count.index].id
     route_table_id = aws_route_table.public.id
 }
 
-# Route table for private subnets
-resource "aws_route_table" "private" {
-    vpc_id = aws_vpc.eks_vpc.id
-
-    route {
-        cidr_block     = "0.0.0.0/0"
-        nat_gateway_id = aws_nat_gateway.nat.id
+# EKS cluster
+resource "aws_eks_cluster" "eks_cluster" {
+    name     = var.cluster_name
+    role_arn = aws_iam_role.eks_cluster.arn
+    vpc_config {
+        subnet_ids = aws_subnet.public[*].id
     }
-
-    tags = {
-        Name = "${var.cluster_name}-private-rt"
-    }
+    depends_on = [
+        aws_iam_role_policy_attachment.eks_cluster_policy
+    ]
 }
 
-# Route table associations for private subnets
-resource "aws_route_table_association" "private" {
-    count          = 2
-    subnet_id      = aws_subnet.private[count.index].id
-    route_table_id = aws_route_table.private.id
+resource "aws_eks_node_group" "node_group" {
+    cluster_name    = aws_eks_cluster.eks_cluster.name
+    node_group_name = "eks-nodes"
+    node_role_arn   = aws_iam_role.eks_nodes.arn
+    subnet_ids      = aws_subnet.public[*].id
+    scaling_config {
+        desired_size = 2
+        max_size     = 3
+        min_size     = 1
+    }
+    depends_on = [
+        aws_iam_role_policy_attachment.eks_worker_node_policy,
+        aws_iam_role_policy_attachment.eks_cni_policy,
+        aws_iam_role_policy_attachment.ecr_read_only
+    ]
 }
 
-# IAM Role for EKS Cluster
-resource "aws_iam_role" "eks_cluster_role" {
-    name = "${var.cluster_name}-cluster-role"
-
+# IAM roles for EKS
+resource "aws_iam_role" "eks_cluster" {
+    name = "eks-cluster-role"
     assume_role_policy = jsonencode({
         Version = "2012-10-17"
         Statement = [
@@ -144,16 +138,13 @@ resource "aws_iam_role" "eks_cluster_role" {
     })
 }
 
-# Attach the required policies for EKS
 resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
     policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-    role       = aws_iam_role.eks_cluster_role.name
+    role       = aws_iam_role.eks_cluster.name
 }
 
-# IAM Role for Worker Nodes
-resource "aws_iam_role" "eks_node_role" {
-    name = "${var.cluster_name}-node-role"
-
+resource "aws_iam_role" "eks_nodes" {
+    name = "eks-nodes-role"
     assume_role_policy = jsonencode({
         Version = "2012-10-17"
         Statement = [
@@ -168,219 +159,183 @@ resource "aws_iam_role" "eks_node_role" {
     })
 }
 
-# Attach required policies for EKS worker nodes
 resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
     policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-    role       = aws_iam_role.eks_node_role.name
+    role       = aws_iam_role.eks_nodes.name
 }
 
 resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
     policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-    role       = aws_iam_role.eks_node_role.name
+    role       = aws_iam_role.eks_nodes.name
 }
 
-resource "aws_iam_role_policy_attachment" "eks_container_registry_read_only" {
+resource "aws_iam_role_policy_attachment" "ecr_read_only" {
     policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-    role       = aws_iam_role.eks_node_role.name
+    role       = aws_iam_role.eks_nodes.name
 }
 
-# Security Group for EKS Cluster
-resource "aws_security_group" "eks_cluster_sg" {
-    name        = "${var.cluster_name}-cluster-sg"
-    description = "Security group for EKS cluster control plane"
-    vpc_id      = aws_vpc.eks_vpc.id
-
-    egress {
-        from_port   = 0
-        to_port     = 0
-        protocol    = "-1"
-        cidr_blocks = ["0.0.0.0/0"]
-    }
-
-    tags = {
-        Name = "${var.cluster_name}-cluster-sg"
-    }
-}
-
-# Security Group for Worker Nodes
+# Security groups
 resource "aws_security_group" "eks_nodes_sg" {
-    name        = "${var.cluster_name}-nodes-sg"
-    description = "Security group for EKS worker nodes"
-    vpc_id      = aws_vpc.eks_vpc.id
-
+    name        = "eks-nodes-sg"
+    vpc_id      = aws_vpc.main.id
+    ingress {
+        from_port       = 80
+        to_port         = 80
+        protocol        = "tcp"
+        security_groups = [aws_security_group.alb_sg.id]
+    }
     egress {
         from_port   = 0
         to_port     = 0
         protocol    = "-1"
         cidr_blocks = ["0.0.0.0/0"]
     }
-
     tags = {
-        Name = "${var.cluster_name}-nodes-sg"
+        Name = "eks-nodes-sg"
     }
 }
 
-# Restrict traffic between control plane and worker nodes
-resource "aws_security_group_rule" "cluster_to_nodes" {
-    description              = "Allow cluster to communicate with worker nodes"
-    from_port                = 443
-    to_port                  = 443
-    protocol                 = "tcp"
-    security_group_id        = aws_security_group.eks_nodes_sg.id
-    source_security_group_id = aws_security_group.eks_cluster_sg.id
-    type                     = "ingress"
-}
-
-resource "aws_security_group_rule" "nodes_to_cluster" {
-    description              = "Allow worker nodes to communicate with the cluster"
-    from_port                = 443
-    to_port                  = 443
-    protocol                 = "tcp"
-    security_group_id        = aws_security_group.eks_cluster_sg.id
-    source_security_group_id = aws_security_group.eks_nodes_sg.id
-    type                     = "ingress"
-}
-
-# Allow worker nodes to communicate with each other
-resource "aws_security_group_rule" "nodes_self" {
-    description       = "Allow worker nodes to communicate with each other"
-    from_port         = 0
-    to_port           = 65535
-    protocol          = "tcp"
-    security_group_id = aws_security_group.eks_nodes_sg.id
-    self              = true
-    type              = "ingress"
-}
-
-# EKS Cluster
-resource "aws_eks_cluster" "eks_cluster" {
-    name     = var.cluster_name
-    role_arn = aws_iam_role.eks_cluster_role.arn
-    version  = var.kubernetes_version
-
-    vpc_config {
-        subnet_ids             = concat(aws_subnet.public[*].id, aws_subnet.private[*].id)
-        security_group_ids     = [aws_security_group.eks_cluster_sg.id]
-        endpoint_private_access = true
-        endpoint_public_access  = true
+resource "aws_security_group" "alb_sg" {
+    name        = "eks-alb-sg"
+    vpc_id      = aws_vpc.main.id
+    ingress {
+        from_port   = 80
+        to_port     = 80
+        protocol    = "tcp"
+        cidr_blocks = ["0.0.0.0/0"]
     }
-
-    depends_on = [
-        aws_iam_role_policy_attachment.eks_cluster_policy
-    ]
-}
-
-# EKS Node Group
-resource "aws_eks_node_group" "eks_node_group" {
-    cluster_name    = aws_eks_cluster.eks_cluster.name
-    node_group_name = "${var.cluster_name}-node-group"
-    node_role_arn   = aws_iam_role.eks_node_role.arn
-    subnet_ids      = aws_subnet.private[*].id
-
-    scaling_config {
-        desired_size = var.node_group_desired_size
-        max_size     = var.node_group_desired_size + 2
-        min_size     = 1
+    egress {
+        from_port   = 0
+        to_port     = 0
+        protocol    = "-1"
+        cidr_blocks = ["0.0.0.0/0"]
     }
-
-    instance_types = ["t3.medium"]
-    ami_type       = "AL2_x86_64"
-
     tags = {
-        Name = "${var.cluster_name}-node-group"
+        Name = "eks-alb-sg"
     }
-
-    depends_on = [
-        aws_iam_role_policy_attachment.eks_worker_node_policy,
-        aws_iam_role_policy_attachment.eks_cni_policy,
-        aws_iam_role_policy_attachment.eks_container_registry_read_only
-    ]
 }
 
-# Output to get the kubeconfig command
-output "kubeconfig_command" {
-    value = "aws eks update-kubeconfig --region ${var.region} --name ${aws_eks_cluster.eks_cluster.name}"
-}
-
-# Output the ECR image URI used
-output "ecr_image_uri" {
-    value = var.ecr_image_uri
-}
-
-# Kubernetes Deployment
+# Kubernetes deployment
 resource "kubernetes_deployment" "app" {
     metadata {
-        name = "eks-app-deployment"
-        labels = {
-            app = "eks-app"
-        }
+        name      = "eks-app-deployment"
+        namespace = "default"
     }
-
     spec {
         replicas = 2
-
         selector {
             match_labels = {
                 app = "eks-app"
             }
         }
-
         template {
             metadata {
                 labels = {
                     app = "eks-app"
                 }
             }
-
             spec {
                 container {
                     image = var.ecr_image_uri
-                    name  = "app-container"
-
+                    name  = "eks-app"
                     port {
                         container_port = 80
-                    }
-
-                    resources {
-                        limits = {
-                            cpu    = "0.5"
-                            memory = "512Mi"
-                        }
-                        requests = {
-                            cpu    = "0.25"
-                            memory = "256Mi"
-                        }
                     }
                 }
             }
         }
     }
-
     depends_on = [
-        aws_eks_node_group.eks_node_group
+        aws_eks_node_group.node_group
     ]
 }
 
-# Kubernetes Service
+# Kubernetes service with LoadBalancer
 resource "kubernetes_service" "app_service" {
     metadata {
-        name = "eks-app-service"
+        name      = "eks-app-service"
+        namespace = "default"
     }
-
     spec {
         selector = {
             app = "eks-app"
         }
-
         port {
             port        = 80
             target_port = 80
         }
-
         type = var.service_type
     }
-
     depends_on = [
         kubernetes_deployment.app
     ]
 }
+
+# AWS Load Balancer Controller
+resource "aws_iam_policy" "load_balancer_controller" {
+    name        = "AWSLoadBalancerControllerIAMPolicy"
+    description = "Policy for AWS Load Balancer Controller"
+    policy      = file("${path.module}/iam-policy.json")
+}
+
+resource "aws_iam_role" "load_balancer_controller" {
+    name = "AWSLoadBalancerControllerRole"
+    assume_role_policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+            {
+                Effect = "Allow"
+                Principal = {
+                    Federated = "arn:aws:iam::${var.aws_account_id}:oidc-provider/oidc.eks.${var.region}.amazonaws.com/id/${replace(aws_eks_cluster.eks_cluster.identity[0].oidc[0].issuer, "https://", "")}"
+                }
+                Action = "sts:AssumeRoleWithWebIdentity"
+                Condition = {
+                    StringEquals = {
+                        "oidc.eks.${var.region}.amazonaws.com/id/${replace(aws_eks_cluster.eks_cluster.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
+                    }
+                }
+            }
+        ]
+    })
+}
+
+resource "aws_iam_role_policy_attachment" "load_balancer_controller" {
+    role       = aws_iam_role.load_balancer_controller.name
+    policy_arn = aws_iam_policy.load_balancer_controller.arn
+}
+
+resource "kubernetes_service_account" "load_balancer_controller" {
+    metadata {
+        name      = "aws-load-balancer-controller"
+        namespace = "kube-system"
+        annotations = {
+            "eks.amazonaws.com/role-arn" = aws_iam_role.load_balancer_controller.arn
+        }
+    }
+}
+
+resource "helm_release" "load_balancer_controller" {
+    name       = "aws-load-balancer-controller"
+    repository = "https://aws.github.io/eks-charts"
+    chart      = "aws-load-balancer-controller"
+    namespace  = "kube-system"
+    set {
+        name  = "clusterName"
+        value = var.cluster_name
+    }
+    set {
+        name  = "serviceAccount.create"
+        value = "false"
+    }
+    set {
+        name  = "serviceAccount.name"
+        value = "aws-load-balancer-controller"
+    }
+    depends_on = [
+        kubernetes_service_account.load_balancer_controller,
+        aws_eks_node_group.node_group
+    ]
+}
+
+# Data source for availability zones
+data "aws_availability_zones" "available" {}
