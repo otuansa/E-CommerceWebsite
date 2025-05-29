@@ -7,10 +7,14 @@ pipeline {
         string(name: 'IMAGE_TAG', defaultValue: '', description: 'Docker image tag (leave blank to use build number and commit hash)')
         string(name: 'CLUSTER_NAME', defaultValue: 'your-eks-cluster-name', description: 'EKS Cluster Name')
         string(name: 'TEST_PORT', defaultValue: '8080', description: 'Host port for testing Docker image (use 0 for random port)')
+        booleanParam(name: 'DESTROY', defaultValue: false, description: 'Check to destroy resources instead of deploying')
     }
 
     stages {
         stage('Compute Image Tag') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 script {
                     def gitCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
@@ -21,6 +25,9 @@ pipeline {
         }
 
         stage('Validate Parameters') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 script {
                     if (!params.AWS_ACCOUNT_ID ==~ /\d{12}/) {
@@ -37,6 +44,9 @@ pipeline {
         }
 
         stage('Load Dynamic Config') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 script {
                     def awsAccountId = params.AWS_ACCOUNT_ID
@@ -67,6 +77,9 @@ pipeline {
         }
 
         stage('Ensure ECR Repository') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 script {
                     try {
@@ -81,6 +94,9 @@ pipeline {
         }
 
         stage('Build Docker Image') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 script {
                     docker.build("${env.DOCKER_IMAGE}", '-f webapp/Dockerfile ./webapp')
@@ -89,6 +105,9 @@ pipeline {
         }
 
         stage('Test Docker Image') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 script {
                     def testPort = params.TEST_PORT.toInteger()
@@ -106,6 +125,9 @@ pipeline {
         }
 
         stage('Login to Amazon ECR') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 script {
                     withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
@@ -116,6 +138,9 @@ pipeline {
         }
 
         stage('Push Docker Image to ECR') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 script {
                     docker.withRegistry("https://${env.DOCKER_IMAGE.split(':')[0]}") {
@@ -126,6 +151,9 @@ pipeline {
         }
 
         stage('Update Terraform with New Image URI') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 script {
                     writeFile file: 'TerraformDep/terraform.tfvars', text: """
@@ -140,6 +168,9 @@ pipeline {
         }
 
         stage('Apply Terraform Changes') {
+            when {
+                expression { !params.DESTROY }
+            }
             steps {
                 dir('TerraformDep') {
                     script {
@@ -153,21 +184,48 @@ pipeline {
                 }
             }
         }
+
+        stage('Terraform Destroy') {
+            when {
+                expression { params.DESTROY }
+            }
+            steps {
+                dir('TerraformDep') {
+                    script {
+                        withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
+                            sh 'terraform init'
+                            sh 'terraform workspace select dev || true'
+                            sh 'terraform destroy -auto-approve'
+                        }
+                    }
+                }
+            }
+        }
     }
 
     post {
         always {
-            sh 'docker system prune -f || true'
-            sh 'docker ps -q --filter "name=test-container-${env.BUILD_NUMBER}" | xargs -r docker stop || true'
-            sh 'docker ps -a -q --filter "name=test-container-${env.BUILD_NUMBER}" | xargs -r docker rm || true'
+            script {
+                if (!params.DESTROY) {
+                    sh 'docker system prune -f || true'
+                    sh 'docker ps -q --filter "name=test-container-${env.BUILD_NUMBER}" | xargs -r docker stop || true'
+                    sh 'docker ps -a -q --filter "name=test-container-${env.BUILD_NUMBER}" | xargs -r docker rm || true'
+                }
+                echo 'Cleaning up workspace.'
+                cleanWs()
+            }
         }
         success {
-            echo 'Pipeline completed successfully.'
+            echo params.DESTROY ? 'Terraform destroy completed successfully.' : 'Pipeline completed successfully.'
         }
         failure {
-            echo 'Pipeline failed.'
-            dir('TerraformDep') {
-                sh 'terraform init && terraform destroy -auto-approve || true'
+            echo params.DESTROY ? 'Terraform destroy failed.' : 'Pipeline failed.'
+            script {
+                if (!params.DESTROY) {
+                    dir('TerraformDep') {
+                        sh 'terraform init && terraform destroy -auto-approve || true'
+                    }
+                }
             }
         }
     }
