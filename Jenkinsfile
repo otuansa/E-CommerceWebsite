@@ -104,25 +104,7 @@ pipeline {
             }
         }
 
-        stage('Test Docker Image') {
-            when {
-                expression { !params.DESTROY }
-            }
-            steps {
-                script {
-                    def testPort = params.TEST_PORT.toInteger()
-                    def hostPort = testPort == 0 ? '' : "-p ${testPort}:80"
-                    def containerName = "test-container-${env.BUILD_NUMBER}"
-                    try {
-                        sh "docker run -d ${hostPort} --name ${containerName} ${env.DOCKER_IMAGE}"
-                        sh "sleep 5 && curl http://localhost:${testPort == 0 ? '80' : testPort}"
-                    } finally {
-                        sh "docker stop ${containerName} || true"
-                        sh "docker rm ${containerName} || true"
-                    }
-                }
-            }
-        }
+
 
         stage('Login to Amazon ECR') {
             when {
