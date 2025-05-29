@@ -12,9 +12,10 @@ pipeline {
         stage('Compute Image Tag') {
             steps {
                 script {
-                    // Compute IMAGE_TAG dynamically after agent is allocated
+                    // Declare variables with def to avoid global field issues
                     def gitCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    IMAGE_TAG = params.IMAGE_TAG ?: "v${env.BUILD_NUMBER}-${gitCommit}"
+                    def imageTag = params.IMAGE_TAG ?: "v${env.BUILD_NUMBER}-${gitCommit}"
+                    env.IMAGE_TAG = imageTag // Store in env for later stages
                 }
             }
         }
@@ -37,21 +38,34 @@ pipeline {
 
         stage('Load Dynamic Config') {
             steps {
-                withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
+                withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
                     script {
+                        def awsAccountId = params.AWS_ACCOUNT_ID
+                        def clusterName = params.CLUSTER_NAME
                         try {
-                            AWS_ACCOUNT_ID = sh(script: "aws ssm get-parameter --name /jenkins/AWS_ACCOUNT_ID --with-decryption --query 'Parameter.Value' --output text", returnStdout: true).trim()
+                            awsAccountId = sh(script: "aws ssm get-parameter --name /jenkins/AWS_ACCOUNT_ID --with-decryption --query Parameter.Value --output text", returnStdout: true).trim()
+                            echo "Fetched AWS_ACCOUNT_ID from SSM: ${awsAccountId}"
                         } catch (Exception e) {
-                            AWS_ACCOUNT_ID = params.AWS_ACCOUNT_ID
-                            echo "Failed to fetch AWS_ACCOUNT_ID from SSM, using parameter default: ${AWS_ACCOUNT_ID}"
+                            echo "Failed to fetch AWS_ACCOUNT_ID from SSM, using parameter default: ${awsAccountId}"
                         }
                         try {
-                            CLUSTER_NAME = sh(script: "aws ssm get-parameter --name /jenkins/CLUSTER_NAME --with-decryption --query 'Parameter.Value' --output text", returnStdout: true).trim()
+                            clusterName = sh(script: "aws ssm get-parameter --name /jenkins/CLUSTER_NAME --with-decryption --query Parameter.Value --output text", returnStdout: true).trim()
+                            echo "Fetched CLUSTER_NAME from SSM: ${clusterName}"
                         } catch (Exception e) {
-                            CLUSTER_NAME = params.CLUSTER_NAME
-                            echo "Failed to fetch CLUSTER_NAME from SSM, using parameter default: ${CLUSTER_NAME}"
+                            echo "Failed to fetch CLUSTER_NAME from SSM, using parameter default: ${clusterName}"
                         }
-                        DOCKER_IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/projectme-ak:${IMAGE_TAG}"
+                        def dockerImage = "${awsAccountId}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/projectme-ak:${env.IMAGE_TAG}"
+                        env.DOCKER_IMAGE = dockerImage // Store in env for later stages
+                    }
+                }
+            }
+        }
+
+        stage('Ensure ECR Repository') {
+            steps {
+                withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
+                    script {
+                        sh "aws ecr describe-repositories --repository-names projectme-ak --region ${params.AWS_REGION} || aws ecr create-repository --repository-name projectme-ak --region ${params.AWS_REGION}"
                     }
                 }
             }
@@ -60,7 +74,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    docker.build(DOCKER_IMAGE, '-f webapp/Dockerfile ./webapp')
+                    def dockerImage = docker.build("${env.DOCKER_IMAGE}", '-f webapp/Dockerfile ./webapp')
                 }
             }
         }
@@ -68,7 +82,7 @@ pipeline {
         stage('Test Docker Image') {
             steps {
                 script {
-                    def container = docker.image(DOCKER_IMAGE).run('-p 8080:80')
+                    def container = docker.image("${env.DOCKER_IMAGE}").run('-p 8080:80')
                     sh 'sleep 5 && curl http://localhost:8080'
                     container.stop()
                 }
@@ -78,7 +92,7 @@ pipeline {
         stage('Login to Amazon ECR') {
             steps {
                 withAWS(credentials: 'aws-credentials-id', region: "${params.AWS_REGION}") {
-                    sh "aws ecr get-login-password --region ${params.AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com"
+                    sh "aws ecr get-login-password --region ${params.AWS_REGION} | docker login --username AWS --password-stdin ${env.DOCKER_IMAGE.split(':')[0]}"
                 }
             }
         }
@@ -86,8 +100,8 @@ pipeline {
         stage('Push Docker Image to ECR') {
             steps {
                 script {
-                    docker.withRegistry("https://${AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com") {
-                        docker.image(DOCKER_IMAGE).push()
+                    docker.withRegistry("https://${env.DOCKER_IMAGE.split(':')[0]}") {
+                        docker.image("${env.DOCKER_IMAGE}").push()
                     }
                 }
             }
@@ -97,8 +111,8 @@ pipeline {
             steps {
                 script {
                     writeFile file: 'TerraformDep/terraform.tfvars', text: """
-                    ecr_image_uri = "${DOCKER_IMAGE}"
-                    cluster_name = "${CLUSTER_NAME}"
+                    ecr_image_uri = "${env.DOCKER_IMAGE}"
+                    cluster_name = "${env.CLUSTER_NAME}"
                     region = "${params.AWS_REGION}"
                     """
                 }
@@ -123,7 +137,7 @@ pipeline {
 
     post {
         always {
-            sh 'docker system prune -f'
+            sh 'docker system prune -f || true'
         }
         success {
             echo 'Pipeline completed successfully.'
@@ -131,7 +145,7 @@ pipeline {
         failure {
             echo 'Pipeline failed.'
             dir('TerraformDep') {
-                sh 'terraform destroy -auto-approve || true'
+                sh 'terraform init && terraform destroy -auto-approve || true'
             }
         }
     }
