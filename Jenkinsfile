@@ -83,7 +83,7 @@ pipeline {
                steps {
                    script {
                        try {
-                           withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
+                           withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
                                sh "aws ecr describe-repositories --repository-names projectme-ak --region ${params.AWS_REGION} || aws ecr create-repository --repository-name projectme-ak --region ${params.AWS_REGION}"
                            }
                        } catch (Exception e) {
@@ -206,7 +206,7 @@ pipeline {
                steps {
                    dir('TerraformDep') {
                        script {
-                           withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
+                           withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
                                sh 'terraform init'
                                sh 'terraform workspace select dev || terraform workspace new dev'
                                sh 'terraform plan -out=tfplan'
@@ -224,7 +224,7 @@ pipeline {
                steps {
                    dir('TerraformDep') {
                        script {
-                           withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
+                           withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
                                // Write tfvars for destroy
                                writeFile file: 'terraform.tfvars', text: """
                                ecr_image_uri = "205930632952.dkr.ecr.eu-west-2.amazonaws.com/projectme-ak:latest"
