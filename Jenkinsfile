@@ -6,7 +6,7 @@ pipeline {
            string(name: 'AWS_REGION', defaultValue: 'us-west-2', description: 'AWS Region')
            string(name: 'IMAGE_TAG', defaultValue: '', description: 'Docker image tag (leave blank to use build number and commit hash)')
            string(name: 'CLUSTER_NAME', defaultValue: 'your-eks-cluster-name', description: 'EKS Cluster Name')
-           string(name: 'TEST_PORT', defaultValue: '8080', description: 'Host port for testing Docker image (use 0 for random port)')
+           string(name: 'TEST_PORT', defaultValue: '8081', description: 'Host port for testing Docker image (use 0 for random port)')
            booleanParam(name: 'DESTROY', defaultValue: false, description: 'Check to destroy resources instead of deploying')
        }
 
@@ -225,18 +225,22 @@ pipeline {
                    dir('TerraformDep') {
                        script {
                            withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
-                               // Write tfvars for destroy
-                               writeFile file: 'terraform.tfvars', text: """
-                               ecr_image_uri = "205930632952.dkr.ecr.eu-west-2.amazonaws.com/projectme-ak:latest"
-                               cluster_name = "${params.CLUSTER_NAME}"
-                               region = "${params.AWS_REGION}"
-                               service_type = "LoadBalancer"
-                               aws_account_id = "${params.AWS_ACCOUNT_ID}"
-                               """
-                               sh 'terraform init'
-                               sh 'terraform workspace select dev || true'
-                               sh 'terraform destroy -auto-approve'
-                           }
+                                  writeFile file: 'terraform.tfvars', text: """
+                                  ecr_image_uri = "205930632952.dkr.ecr.us-west-2.amazonaws.com/projectme-ak:latest"
+                                  cluster_name = "${params.CLUSTER_NAME}"
+                                  region = "${params.AWS_REGION}"
+                                  service_type = "LoadBalancer"
+                                  aws_account_id = "${params.AWS_ACCOUNT_ID}"
+                                  """
+                                  sh 'terraform init'
+                                  sh 'terraform workspace select dev || true'
+                                  
+                                  // Try to destroy Kubernetes resources first (ignore failures)
+                                  sh 'terraform destroy -target=kubernetes_deployment.app -auto-approve || true'
+                                  sh 'terraform destroy -target=kubernetes_service_account.load_balancer_controller -auto-approve || true'
+                                  
+                                  // Then destroy everything else
+                                  sh 'terraform destroy -auto-approve'
                        }
                    }
                }
