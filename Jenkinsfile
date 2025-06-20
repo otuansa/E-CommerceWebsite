@@ -3,7 +3,7 @@ pipeline {
 
        parameters {
            string(name: 'AWS_ACCOUNT_ID', defaultValue: '205930632952', description: 'AWS Account ID')
-           string(name: 'AWS_REGION', defaultValue: 'eu-west-2', description: 'AWS Region')
+           string(name: 'AWS_REGION', defaultValue: 'us-west-2', description: 'AWS Region')
            string(name: 'IMAGE_TAG', defaultValue: '', description: 'Docker image tag (leave blank to use build number and commit hash)')
            string(name: 'CLUSTER_NAME', defaultValue: 'your-eks-cluster-name', description: 'EKS Cluster Name')
            string(name: 'TEST_PORT', defaultValue: '8080', description: 'Host port for testing Docker image (use 0 for random port)')
@@ -83,7 +83,7 @@ pipeline {
                steps {
                    script {
                        try {
-                           withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
+                           withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                                sh "aws ecr describe-repositories --repository-names projectme-ak --region ${params.AWS_REGION} || aws ecr create-repository --repository-name projectme-ak --region ${params.AWS_REGION}"
                            }
                        } catch (Exception e) {
@@ -105,39 +105,56 @@ pipeline {
            }
 
            stage('Test Docker Image') {
-               when {
-                   expression { !params.DESTROY }
-               }
-               steps {
-                   script {
-                       def testPort = params.TEST_PORT.toInteger()
-                       def hostPort = testPort == 0 ? '' : "-p ${testPort}:80"
-                       def containerName = "test-container-${env.BUILD_NUMBER}"
-                       try {
-                           sh "docker run -d ${hostPort} --name ${containerName} ${env.DOCKER_IMAGE}"
-                           sh "sleep 5"
-                           // Check index.html
-                           def indexResponse = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${testPort == 0 ? '80' : testPort}/index.html", returnStdout: true).trim()
-                           if (indexResponse != '200') {
-                               error "Failed to load index.html: HTTP ${indexResponse}"
-                           }
-                           // Check CSS (example)
-                           def cssResponse = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${testPort == 0 ? '80' : testPort}/css/style.css", returnStdout: true).trim()
-                           if (cssResponse != '200') {
-                               error "Failed to load css/style.css: HTTP ${cssResponse}"
-                           }
-                           // Check JS (example)
-                           def jsResponse = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${testPort == 0 ? '80' : testPort}/js/script.js", returnStdout: true).trim()
-                           if (jsResponse != '200') {
-                               error "Failed to load js/script.js: HTTP ${jsResponse}"
-                           }
-                       } finally {
-                           sh "docker stop ${containerName} || true"
-                           sh "docker rm ${containerName} || true"
-                       }
-                   }
-               }
-           }
+                when {
+                    expression { !params.DESTROY }
+                }
+                steps {
+                    script {
+                        def testPort = params.TEST_PORT.toInteger()
+                        def hostPort = testPort == 0 ? '' : "-p ${testPort}:80"
+                        def containerName = "test-container-${env.BUILD_NUMBER}"
+                        try {
+                            sh "docker run -d ${hostPort} --name ${containerName} ${env.DOCKER_IMAGE}"
+                            sh "sleep 5"
+                            
+                            // Check if container is running
+                            sh "docker ps | grep ${containerName}"
+                            
+                            // Check index.html (main page)
+                            def indexResponse = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${testPort == 0 ? '80' : testPort}/index.html", returnStdout: true).trim()
+                            if (indexResponse != '200') {
+                                error "Failed to load index.html: HTTP ${indexResponse}"
+                            }
+                            
+                            // Alternative: Check root path instead of specific files
+                            def rootResponse = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${testPort == 0 ? '80' : testPort}/", returnStdout: true).trim()
+                            if (rootResponse != '200') {
+                                error "Failed to load root page: HTTP ${rootResponse}"
+                            }
+                            
+                            echo "✅ Web application is responding correctly"
+                            
+                            // REMOVED: CSS and JS checks since these files don't exist
+                            // If you add these files later, uncomment the checks below:
+                            /*
+                            def cssResponse = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${testPort == 0 ? '80' : testPort}/css/style.css", returnStdout: true).trim()
+                            if (cssResponse != '200') {
+                                error "Failed to load css/style.css: HTTP ${cssResponse}"
+                            }
+                            
+                            def jsResponse = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${testPort == 0 ? '80' : testPort}/js/script.js", returnStdout: true).trim()
+                            if (jsResponse != '200') {
+                                error "Failed to load js/script.js: HTTP ${jsResponse}"
+                            }
+                            */
+                            
+                        } finally {
+                            sh "docker stop ${containerName} || true"
+                            sh "docker rm ${containerName} || true"
+                        }
+                    }
+                }
+            }
 
            stage('Login to Amazon ECR') {
                when {
@@ -145,7 +162,7 @@ pipeline {
                }
                steps {
                    script {
-                       withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
+                       withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
                            sh "aws ecr get-login-password --region ${params.AWS_REGION} | docker login --username AWS --password-stdin ${env.DOCKER_IMAGE.split(':')[0]}"
                        }
                    }
