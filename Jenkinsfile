@@ -52,7 +52,7 @@ pipeline {
                        def awsAccountId = params.AWS_ACCOUNT_ID
                        def clusterName = params.CLUSTER_NAME
                        try {
-                           withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
+                           withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
                                try {
                                    awsAccountId = sh(script: "aws ssm get-parameter --name /jenkins/AWS_ACCOUNT_ID --with-decryption --query Parameter.Value --output text", returnStdout: true).trim()
                                    echo "Fetched AWS Account ID: ${awsAccountId}"
