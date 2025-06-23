@@ -6,7 +6,7 @@ pipeline {
            string(name: 'AWS_REGION', defaultValue: 'us-west-2', description: 'AWS Region')
            string(name: 'IMAGE_TAG', defaultValue: '', description: 'Docker image tag (leave blank to use build number and commit hash)')
            string(name: 'CLUSTER_NAME', defaultValue: 'your-eks-cluster-name', description: 'EKS Cluster Name')
-           string(name: 'TEST_PORT', defaultValue: '8081', description: 'Host port for testing Docker image (use 0 for random port)')
+           string(name: 'TEST_PORT', defaultValue: '8080', description: 'Host port for testing Docker image (use 0 for random port)')
            booleanParam(name: 'DESTROY', defaultValue: false, description: 'Check to destroy resources instead of deploying')
        }
 
@@ -52,7 +52,7 @@ pipeline {
                        def awsAccountId = params.AWS_ACCOUNT_ID
                        def clusterName = params.CLUSTER_NAME
                        try {
-                           withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
+                           withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                                try {
                                    awsAccountId = sh(script: "aws ssm get-parameter --name /jenkins/AWS_ACCOUNT_ID --with-decryption --query Parameter.Value --output text", returnStdout: true).trim()
                                    echo "Fetched AWS Account ID: ${awsAccountId}"
@@ -83,7 +83,7 @@ pipeline {
                steps {
                    script {
                        try {
-                           withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
+                           withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                                sh "aws ecr describe-repositories --repository-names projectme-ak --region ${params.AWS_REGION} || aws ecr create-repository --repository-name projectme-ak --region ${params.AWS_REGION}"
                            }
                        } catch (Exception e) {
@@ -162,7 +162,7 @@ pipeline {
                }
                steps {
                    script {
-                       withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
+                       withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                            sh "aws ecr get-login-password --region ${params.AWS_REGION} | docker login --username AWS --password-stdin ${env.DOCKER_IMAGE.split(':')[0]}"
                        }
                    }
@@ -206,7 +206,7 @@ pipeline {
                steps {
                    dir('TerraformDep') {
                        script {
-                           withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
+                           withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                                sh 'terraform init'
                                sh 'terraform workspace select dev || terraform workspace new dev'
                                sh 'terraform plan -out=tfplan'
@@ -224,7 +224,7 @@ pipeline {
                steps {
                    dir('TerraformDep') {
                        script {
-                           withAWS(credentials: 'my-aws-credential', region: "${params.AWS_REGION}") {
+                           withAWS(credentials: 'access-key', region: "${params.AWS_REGION}") {
                                   writeFile file: 'terraform.tfvars', text: """
                                   ecr_image_uri = "205930632952.dkr.ecr.us-west-2.amazonaws.com/projectme-ak:latest"
                                   cluster_name = "${params.CLUSTER_NAME}"
