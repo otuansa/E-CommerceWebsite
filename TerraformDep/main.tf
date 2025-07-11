@@ -15,10 +15,10 @@ terraform {
         }
     }
     backend "s3" {
-        bucket         = "ecommerce-terraform-state-205930632952"
+        bucket         = "ecommerce-terraform-out"
         key            = "terraform.tfstate"
-        region         = "eu-west-2"
-        dynamodb_table = "ecommerce-terraform-locks"
+        region         = "us-west-2"
+        dynamodb_table = "e-commerce-terraform"
     }
 }
 
