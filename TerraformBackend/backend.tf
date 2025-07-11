@@ -75,17 +75,17 @@ output "dynamodb_table_name" {
 variable "region" {
     description = "AWS region"
     type        = string
-    default     = "us-west-2"
+    default     = "eu-west-2"
 }
 
 variable "bucket_name" {
     description = "Name of the S3 bucket for Terraform state"
     type        = string
-    default     = "ecommerce-terraform-state-sr"
+    default     = "ecommerce-terraform-out"
 }
 
 variable "dynamodb_table_name" {
     description = "Name of the DynamoDB table for state locking"
     type        = string
-    default     = "ecommerce-terraform-locks-sr"
+    default     = "e-commerce-terraform"
 }
